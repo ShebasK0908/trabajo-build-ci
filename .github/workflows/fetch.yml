@@ -1,0 +1,40 @@
+name: Fetch Juego3 XCI (SwissTransfer -> release privada)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Descargar el XCI desde SwissTransfer (enlace del usuario)
+        run: |
+          UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
+          LINK="10ed0ac4-9a54-4933-8ac4-35783ffa0eed"
+          UUID="b2c14028-0579-46bc-85a1-0d0b4ad5a63d"
+          ESPERADO=7375051776
+          for i in 1 2 3 4 5; do
+            HOST=$(curl -s -A "$UA" "https://www.swisstransfer.com/api/links/$LINK" | python3 -c "import sys,json;print(json.load(sys.stdin)['data']['downloadHost'])")
+            echo "intento $i, host $HOST"
+            curl -s -A "$UA" -o game.xci "https://$HOST/api/download/$LINK/$UUID" || true
+            SIZE=$(stat -c %s game.xci 2>/dev/null || echo 0)
+            echo "tamaño: $SIZE / $ESPERADO"
+            if [ "$SIZE" -eq "$ESPERADO" ]; then break; fi
+            sleep 10
+          done
+          test $(stat -c %s game.xci) -eq 7375051776
+          python3 -c "d=open('game.xci','rb'); d.seek(0x100); assert d.read(4)==b'HEAD'; print('XCI HEAD ok')"
+          ls -la
+
+      - name: Partir y subir a la release privada game
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+        run: |
+          split -b 500m game.xci xci-part-
+          ls -la xci-part-*
+          gh release create game xci-part-* --repo ShebasK0908/trabajo-build --title "Juego 3 - XCI (privado)" --notes "Copia propia del usuario, XCI en trozos de 500 MB. No compartir." || gh release upload game xci-part-* --clobber --repo ShebasK0908/trabajo-build
+          gh api repos/ShebasK0908/trabajo-build/releases/tags/game --jq '.assets[] | "\(.name) \(.size)"'
