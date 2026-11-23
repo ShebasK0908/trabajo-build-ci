@@ -1,0 +1,79 @@
+name: Build Sonic Forces (nxnative)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: xcode-27
+    timeout-minutes: 360
+    steps:
+      - name: Checkout (repo de build, sin archivos del juego)
+        uses: actions/checkout@v4
+
+      - name: Seleccionar Xcode 27.2 y liberar disco
+        run: |
+          for d in /Applications/Xcode_27.2.app /Applications/Xcode_27.2.0.app; do
+            if [ -d "$d" ]; then sudo xcode-select -s "$d"; echo "Seleccionado $d"; fi
+          done
+          xcodebuild -version
+          xcrun -sdk macosx metal --version
+          for d in /Applications/Xcode*.app; do
+            case "$(basename "$d")" in
+              *27.2*) echo "mantengo $d" ;;
+              *) echo "borro $d"; sudo rm -rf "$d" ;;
+            esac
+          done
+          rm -rf ~/Library/Android 2>/dev/null || true
+          rm -rf ~/Library/Developer/CoreSimulator 2>/dev/null || true
+          sudo rm -rf /Applications/GarageBand.app /Applications/iMovie.app /Applications/Keynote.app /Applications/Numbers.app /Applications/Pages.app 2>/dev/null || true
+          df -h /
+
+      - name: Herramientas y nxnative (upstream, al día)
+        run: |
+          xcodebuild -downloadComponent MetalToolchain
+          brew install xcodegen zstd glslang
+          brew install --cask dotnet-sdk || true
+          python3 -m pip install --user --break-system-packages lz4 "capstone>=5,<6" fonttools nsz zbic
+          python3 -m pip install --user --break-system-packages "backports.zstd; python_version < '3.14'" || true
+          cd ~ && git clone --depth 1 https://github.com/seedds/nxnative.git
+
+      - name: Parche - lanzador en español y calidad original (Televisor 1080p + MetalFX)
+        run: |
+          python3 "$GITHUB_WORKSPACE/tools/traducir_y_ajustes.py" ~/nxnative
+
+      - name: Descargar el juego desde la release privada
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+        run: |
+          mkdir -p ~/Games/SonicForces ~/keys
+          cd ~/Games/SonicForces
+          gh release download game --repo ShebasK0908/trabajo-build --dir dl
+          ls -la dl
+          cp dl/prod.keys ~/keys/prod.keys
+          test -s ~/keys/prod.keys
+          # UN SOLO juego en la carpeta (lección Naruto: «más de un juego en la carpeta»)
+          cat dl/xci-part-* > game.xci
+          ls -la
+          test $(stat -f%z game.xci) -eq 7375051776
+          python3 -c "d=open('game.xci','rb'); d.seek(0x100); assert d.read(4)==b'HEAD', 'magic HEAD no encontrado'; print('XCI HEAD ok')"
+
+      - name: Build del IPA (idioma del juego - español)
+        run: |
+          python3 ~/nxnative/scripts/build_ipa_from_nsp.py ~/Games/SonicForces -k ~/keys/prod.keys -l es --no-keep-extracted
+          ls -la ~/Games/SonicForces
+
+      - name: Subir el resultado a la release privada
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+        run: |
+          cd ~/Games/SonicForces
+          IPA=$(find . -maxdepth 2 -name '*.ipa' | head -1)
+          test -n "$IPA"
+          ls -la "$IPA"
+          split -b 1900m "$IPA" ipa-part-
+          PARTS=$(ls ipa-part-*)
+          gh release create sonic-ipa $PARTS --repo ShebasK0908/trabajo-build --title "Sonic Forces IPA (privado)" --notes "Build propia del usuario desde su copia (perfil provisional, sin perfil upstream). No compartir." || gh release upload sonic-ipa $PARTS --clobber --repo ShebasK0908/trabajo-build
